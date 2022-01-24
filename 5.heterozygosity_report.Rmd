@@ -1,0 +1,130 @@
+---
+title: "0702CR30 bioinformatics"
+output:
+  html_document: 
+    df_print: paged
+runtime: shiny
+---
+Report:                 0702CR30 Genomics of Mountain Galaxias \
+Data received:          December 21\
+Data type:              DArT\
+Raw data:               https://www.dropbox.com/home/cesar%20Team%20Folder/_Customer%20Project%20Files/0702%20DELWP%20(previously%20DSE)/0702CR30%20Genomics%20of%20Mountain%20Galaxias/7.%20Data/raw%20data
+Processing:             https://github.com/NenBarto/stacks_de_novo \
+Number of libraries:      546 \
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#opts_chunk$set(error = TRUE)
+```
+
+Methods
+
+Raw reads (single end, 85bp) provided by Diversity Arrays Technology were demultiplexed with
+process_radtags tool from Stacks suite (Catchen et al 2014) with parameters “-e PstI -r -c -q” into
+546 libraries (466 samples and 80 internal replicates). Key parameters for de novo stacks analysis
+were optimised on a subset of 50 samples based on R80 method first proposed in Parsi et al
+(2017) that optimizes the number of polymorphic loci present in at least 80% of the samples (--
+min-samples-per-pop 0.8). Based on the change in number of loci kept between parameter sets,
+the parameters “M” as the minimum number of nucleotide differences between reads to call them
+as putative loci and “n” as the minimum number of nucleotide differences between putative loci to
+call them a haplotype were both set to 3. 
+
+The analysis was run with the minimum depth of coverage for reporting a stack of 3, resulting in
+343087 genotyped loci with the mean of effective per-sample coverage of 47.5x (stdev=4.4x,
+min=23.3x, max=63.2x). Mean number of sites per locus was 70.1. After filtering out sites that
+were not present in 100% of samples 26821 loci remained (35419 and 29814 for 80% and 90%
+respectively) with 42653 variant sites.
+
+```{r input, echo=TRUE}
+library(RColorBrewer)
+library(ggplot2)
+library(reshape2)
+library(knitr)
+library(kableExtra)
+library(data.table)
+#embed files
+
+projectname="0702CR30"
+projectdir<-"../"
+#locations for input files
+popfile<-paste0(projectdir,"/annotation/popmap_0702CR30")
+populationsdir<-paste0(projectdir,"/results/populations/")
+```
+The files are available for download here: 
+
+```{r download, echo=FALSE}
+xfun::embed_files(c(popfile, list.files('populationsdir', '.tsv')))
+```
+```{r processing, echo=TRUE}
+#read input
+populations<-read.table(popfile,sep="\t")
+pops<-gsub("Galaxias ","",populations$V2)
+popsT<-as.data.frame(table(pops))
+
+#process summaries from stacks populations with three parameters
+results<-list()
+missing<-c("0.8","0.9","1")
+for(missingness in missing){
+  
+  #the output file consists of two joint tables with different number of rows and different headers
+  #1. extract table 1 for polymorphic loci and find the number of samples
+  inFile<-paste0(populationsdir,"/populations.sumstats_summary_",missingness,".tsv")
+  dataPoly<-read.table(inFile,sep="\t",header=T,fill=T,comment.char = "",skip=1)
+  #find the first comment line
+  commentN<-min(grep("#",dataPoly[,1]))
+  nSamples<-commentN-1
+  dataPoly<-dataPoly[1:nSamples,]
+  colnames(dataPoly)[1]<-"Pop.ID"
+  #subselect only certain columns
+  dataPolyS<-dataPoly[,c("Pop.ID","Obs_Het","StdErr.2","Exp_Het","StdErr.4")]
+  #2. exctract table 2 for monorphic loci only
+  dataMono<-read.table(inFile,sep="\t",header=T,fill=T,comment.char = "",skip=commentN+2)
+  colnames(dataMono)[1]<-"Pop.ID"
+  dataMonoS<-dataMono[,c("Pop.ID","Obs_Het","StdErr.2","Exp_Het","StdErr.4")]
+  #dfTemp<-rbind(dataPolyS,dataMonoS)
+  #dfTemp$type<-rep(c("poly","mono"),each=nSamples)
+  results[[missingness]]<-rbind(dataPolyS,dataMonoS)
+}
+
+#data wrangling to get standard errors
+df<-do.call("rbind",results)
+colnames(df)<-c("Pop.ID","Obs_Het","SE","Exp_Het","SE")
+dg_names <- c("Obs_Het", "Exp_Het")
+type <- c("poly","mono")
+dataM <- melt(setDT(df), 
+               measure.vars = patterns(paste(dg_names, collapse = "|"), "SE"), 
+               value.name = c("value", "SE"))
+dataM[, variable := factor(variable, labels = dg_names)]
+dataM<-as.data.frame(dataM)
+dataM$missingness<-rep(rep(missing,each=nSamples*length(dg_names)),length(type))
+dataM$type<-rep(rep(type,each=nSamples),length(missing)*length(dg_names))
+dataM$Pop.ID<-gsub("Galaxias ","",dataM$Pop.ID)
+
+#merge with the annotation to get the real number of samples
+dfM<-merge(dataM,popsT,by.x="Pop.ID",by.y="pops")
+dfM$Pop.ID<-paste0(dfM$Pop.ID,"\n(",dfM$Freq,")")
+colnames(dfM)<-c("population","class","heterozygosity","SE","missingness","type","pop.size")
+dfM$class<-gsub("_.*","",dfM$class)
+dfM$heterozygosity<-as.numeric(dfM$heterozygosity)
+dfM$SE<-as.numeric(dfM$SE)
+
+```
+Population part of the stacks analysis was performed with 80%, 90% and 100% missingness.
+
+```{r visualisation, echo=FALSE}
+radioButtons("Missingness", "Percentage of samples with loci:", choices=c("0.8","0.9","1"),selected="1")
+
+renderPlot({
+  dfMS<-dfM[dfM$missingness==input$Missingness,]
+  p<-ggplot(dfMS,aes(x=population,y=heterozygosity,color=class,shape=type))
+  p<-p+geom_errorbar(aes(ymin=heterozygosity-SE, ymax=heterozygosity+SE), width=.3)
+  p<-p+geom_point(aes(shape=type))
+  p<-p+theme(axis.text.x = element_text(angle = 45,vjust = 0.5))
+  p<-p+scale_shape_manual(values=c(20,17))
+  p<-p+scale_size_manual(values=c(4,4))
+  p<-p+scale_y_log10()
+  p
+})
+
+```
+Figure 1. Observed vs expected heterozigosity for poly and monomorphic loci across populations. Error bars represent standard error, as reported by Stacks. High heterozygosity means lots of genetic variability. Observed heterozygosity is lower than expected for morwell and teranassus populations pointing to possible inbreeding. 
